@@ -1,4 +1,3 @@
-data/*
 run/*/config/target
 setting.json
 ./Dockerfile
