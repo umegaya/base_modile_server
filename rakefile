@@ -1,0 +1,143 @@
+cwd = File.dirname(__FILE__)
+
+require 'json'
+require "#{cwd}/util/docker"
+
+config = JSON.parse File.open("#{cwd}/setting.json").read
+default_service = config["default_service"]
+provider = config["provider"]
+node_num = config["node_num"]
+default_target = config["target"]
+image_name = config["image_name"]
+
+namespace :infra do
+	task :init do
+		sh "#{cwd}/infra/#{provider}/init.rb"
+		Dir.chdir("#{cwd}/infra/kubernetes") do |path|
+			sh "KUBERNETES_PROVIDER=#{provider} hack/dev-build-and-up.sh"
+		end
+		Dir.open('#{cwd}/server/run').each do |path|
+
+		end
+	end
+	task :fin do
+		sh "#{cwd}/infra/#{provider}/fin.rb"
+		Dir.chdir("#{cwd}/infra/kubernetes") do |path|
+			sh "KUBERNETES_PROVIDER=#{provider} cloud/kube-down.sh"
+		end
+	end
+	task :resize, [:service, :size] do |t, args|
+		service = (args[:service] or default_service)
+		p "scale " + service + " to " + (args[:size] or 1).to_s
+		# resize (kubecfg resizse #{service}, #{size})
+	end
+	task :deploy, [:service, :target, :version] => :init do |t, args|
+		service = (args[:service] or default_service)
+		p "deploy " + service
+		# migrate database corresponding to service
+		# deploy (kubecfg rollingUpdate #{service})
+	end
+end
+
+namespace :ci do
+	task :init do
+		sh "boot2docker stop && boot2docker start && sleep 10"
+		Dir.open("#{cwd}/server/run").each do |path|
+			next if path =~ /\.+/
+			Rake::Task["ci:build"].reenable
+			Rake::Task["ci:build"].invoke path.to_sym, "base"
+		end	
+	end
+	task :build, [:service, :target, :version] do |t, args|
+		service = (args[:service] or default_service)
+		target = (args[:target] or default_target)
+		version = (args[:version] or "latest")
+		# setup current config dir
+		sh "rm -rf #{cwd}/server/run/#{service}/config/target"
+		if target.to_sym != :base then
+			sh "cp -r #{cwd}/server/run/#{service}/config/#{target} #{cwd}/server/run/#{service}/config/target"
+		end
+		# build'n push docker image
+		# because current ADD command does not support symlink (see https://github.com/docker/docker/issues/6094)
+		# we copy target Dockerfile to top of project and build.
+		sh "cp ci/#{service}/#{target == 'base' ? 'base' : 'update'}/Dockerfile ."
+		Docker::build("#{image_name}:#{service}.#{target}.#{version}", ".")
+		if target.to_sym != :dev then
+			Docker::push("#{image_name}:#{service}.#{target}.#{version}")
+		end
+	end
+	task :rebuild, [:service, :target, :version] do |t, args|
+		service = (args[:service] or default_service)
+		target = (args[:target] or default_target)
+		version = (args[:version] or "latest")
+		Docker::kill(service)
+		Rake::Task["ci:build"].reenable
+		Rake::Task["ci:build"].invoke service, target, version
+	end
+	task :test, [:service, :target, :version] => :build do |t, args|
+		service = (args[:service] or default_service)
+		target = (args[:target] or default_target)
+		version = (args[:version] or "latest")
+		Docker::start("#{image_name}:#{service}.#{target}.#{version}", service, "/root/test.sh", "-v #{cwd}/server:/tmp/server")
+	end
+	task :deploy, [:service, :target, :version] => :test do |t, args|
+		service = (args[:service] or default_service)
+		target = (args[:target] or default_target)
+		version = (args[:version] or "latest")
+
+		if target != :base then
+			Rake::Task["infra:deploy"].invoke service, target, version
+		end
+	end
+end
+
+ssh_ports = {
+	:app => 10022,
+	:mgmt => 10023,
+	:db => 10024,
+}
+
+namespace :dev do
+	task :init do
+		sh "boot2docker stop && boot2docker start && sleep 10"
+		Dir.open("#{cwd}/server/run").each do |path|
+			next if path =~ /\.+/
+			service = path.to_sym
+			Rake::Task["ci:rebuild"].reenable
+			Rake::Task["ci:rebuild"].invoke service, "dev"
+			Rake::Task["dev:run"].reenable
+			Rake::Task["dev:run"].invoke service
+		end	
+	end
+	task :run, [:service] => :stop do |t, args|
+		service = (args[:service] or default_service)
+		cmds = {
+			:db => "-v #{cwd}/data:/var/lib/mysql -v #{cwd}/server:/tmp/server -p 3306:3306",
+			:app => "-v #{cwd}/server:/tmp/server -p 8080:80",
+			:mgmt => "-v #{cwd}/server:/tmp/server -p 8081:80",
+		}
+		cmdl = cmds[service.to_sym] + " -p #{ssh_ports[service.to_sym]}:22"
+		Docker::launch("#{image_name}:#{service}.dev.latest", service, cmdl)
+	end
+	task :ssh, [:service] do |t, args|
+		service = (args[:service] or default_service)
+		Docker::ssh(service, "-p #{ssh_ports[service.to_sym]}")
+	end
+	task :stop, [:service] do |t, args|
+		service = (args[:service] or default_service)
+		Docker::kill(service)
+	end
+	task :migrate, [:service] do |t, args|
+		service = (args[:service] or default_service)
+		Docker::run("db", "-p #{ssh_ports[:db]}", "bash /tmp/server/schema/migrate.sh #{service}")
+	end
+	task :deploy, [:service] do |t, args|
+		service = (args[:service] or default_service)
+		if service.to_sym != :db then
+			Rake::Task["dev:migrate"].invoke service
+		end
+		Docker::run(service, "-p #{ssh_ports[service.to_sym]}", "bash /tmp/server/run/#{service}/deploy.sh")
+	end
+end
+
+
