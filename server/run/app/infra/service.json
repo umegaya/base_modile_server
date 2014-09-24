@@ -1,0 +1,13 @@
+{
+  "kind": "Service",
+  "apiVersion": "v1beta1",
+  "id": "appservice",
+  "port": 8090,
+  "labels": {
+     "name": "appservice"
+  },
+  "selector": {
+     "name": "app"
+  },
+  "createExternalLoadBalancer": true
+}

@@ -1,0 +1,28 @@
+{
+  "id": "mgmt.replica",
+  "apiVersion": "v1beta1",
+  "kind": "ReplicationController",
+  "desiredState": {
+    "replicas": 1,
+    "replicaSelector": {"name": "mgmt"},
+    "podTemplate": {
+      "desiredState": {
+        "manifest": {
+          "version": "v1beta1",
+          "id": "mgmt.pod",
+          "containers": [{
+            "name": "mgmt",
+            "image": "dockerfile/nginx",
+            "ports": [{"containerPort": 80, "hostPort": 8091}],
+            "env": [
+              {"name":"DB_HOSTNAME","value":"%DB_HOSTNAME%"}
+            ]
+          }]
+        }
+      },
+      "labels": {"name": "mgmt"}
+    }
+  },
+  "labels": {"name": "mgmt.replica"}
+}
+

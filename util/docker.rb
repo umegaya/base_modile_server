@@ -53,6 +53,7 @@ module Docker
 
 	def launch(image, name, opts = nil)
 		if name and Container.exists?(name) then
+			p "already"
 			return Container.new(name, image)
 		end
 		if opts then

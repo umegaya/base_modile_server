@@ -2,6 +2,7 @@ cwd = File.dirname(__FILE__)
 
 require 'json'
 require "#{cwd}/util/docker"
+require "#{cwd}/util/gcloud"
 
 config = JSON.parse File.open("#{cwd}/setting.json").read
 default_service = config["default_service"]
@@ -12,19 +13,69 @@ image_name = config["image_name"]
 
 namespace :infra do
 	task :init do
-		sh "#{cwd}/infra/#{provider}/init.rb"
+		ip = nil
+		sh "ruby #{cwd}/infra/#{provider}/init.rb"
 		Dir.chdir("#{cwd}/infra/kubernetes") do |path|
-			sh "KUBERNETES_PROVIDER=#{provider} hack/dev-build-and-up.sh"
+			unless GCloud::Compute::Instance.has(/kubernetes.+/) then
+				# minions have not initialized yet
+				p "No cluster... create newone"
+				sh "KUBERNETES_PROVIDER=#{provider} hack/dev-build-and-up.sh"
+			end
+			info = GCloud::SQL.get "db"
+			unless info then
+				p "No database... create newone"
+				info = GCloud::SQL.create "db"
+			end
+			ip = info["ipAddresses"][0]["ipAddress"]
 		end
-		Dir.open('#{cwd}/server/run').each do |path|
-
+		p "database ip address => #{ip}"
+		dir = "#{cwd}/server/run"
+		Dir.open(dir).each do |path|
+			infra_dir = "#{dir}/#{path}/infra"
+			rep = "#{infra_dir}/replica.json"
+			if File.exists?(rep) then
+				rep_tmp = "#{infra_dir}/replica_tmp.json"
+				# TODO : if more env value need to pass on creating cluster, better way to replace replica.json
+				sh "sed -e s/%DB_HOSTNAME%/#{ip}/g #{rep} > #{rep_tmp}"
+				Dir.chdir("infra/kubernetes") do |p|
+					# sh "KUBERNETES_PROVIDER=#{provider} cluster/kubecfg.sh delete replicationControllers/#{path}.replica"
+					if (`KUBERNETES_PROVIDER=#{provider} cluster/kubecfg.sh get replicationControllers/#{path}.replica 2>/dev/null`).empty? then
+						sh "KUBERNETES_PROVIDER=#{provider} cluster/kubecfg.sh -c #{rep_tmp} create replicationControllers"
+					end
+				end
+			end
+			service = "#{infra_dir}/service.json"
+			if File.exists?(service) then
+				service_json = JSON.parse File.open(service).read
+				Dir.chdir("infra/kubernetes") do |p|
+					# sh "KUBERNETES_PROVIDER=#{provider} cluster/kubecfg.sh delete services/#{path}service"
+					if (`KUBERNETES_PROVIDER=#{provider} cluster/kubecfg.sh get services/#{path}service 2>/dev/null`).empty? then
+						sh "KUBERNETES_PROVIDER=#{provider} cluster/kubecfg.sh -c #{service} create services"
+						GCloud::Compute::Firewall.allow(service_json["port"])
+					end
+				end
+			end
 		end
 	end
 	task :fin do
-		sh "#{cwd}/infra/#{provider}/fin.rb"
+		sh "ruby #{cwd}/infra/#{provider}/fin.rb"
 		Dir.chdir("#{cwd}/infra/kubernetes") do |path|
-			sh "KUBERNETES_PROVIDER=#{provider} cloud/kube-down.sh"
+			sh "KUBERNETES_PROVIDER=#{provider} cluster/kube-down.sh"
 		end
+		GCloud::SQL.delete "db" rescue nil
+		GCloud::Firewall.cleanup
+	end
+	task :auth, [:username] do |t, args|
+		unless File.exists?("~/.ssh/id_rsa.pub") then
+			sh "ssh-keygen -t rsa"
+		end
+		username = args[:username] or ENV['USER']
+		if File.exists?("./server/cert/#{username}.pub")
+			raise "username duplicate. please specify unique user name as rake infra:auth[username]" 
+		end
+		sh "cp ~/.ssh/id_rsa.pub server/cert/#{username}.pub"
+		sh "gcloud compute project-info add-metadata example-instance --metadata-from-file sshKeys=~/.ssh/id_rsa.pub"
+		p "please commit server/cert/$your_username.pub to repository to enable your login permission to container permanently"
 	end
 	task :resize, [:service, :size] do |t, args|
 		service = (args[:service] or default_service)
@@ -110,14 +161,22 @@ namespace :dev do
 		end	
 	end
 	task :run, [:service] => :stop do |t, args|
-		service = (args[:service] or default_service)
+		service = args[:service]
+		db_hostname_env="DB_HOSTNAME=`docker inspect -f {{.NetworkSettings.IPAddress}} db`"
 		cmds = {
 			:db => "-v #{cwd}/data:/var/lib/mysql -v #{cwd}/server:/tmp/server -p 3306:3306",
-			:app => "-v #{cwd}/server:/tmp/server -p 8080:80",
-			:mgmt => "-v #{cwd}/server:/tmp/server -p 8081:80",
+			:app => "-v #{cwd}/server:/tmp/server -e #{db_hostname_env} -p 8080:80",
+			:mgmt => "-v #{cwd}/server:/tmp/server -e #{db_hostname_env} -p 8081:80",
 		}
-		cmdl = cmds[service.to_sym] + " -p #{ssh_ports[service.to_sym]}:22"
-		Docker::launch("#{image_name}:#{service}.dev.latest", service, cmdl)
+		if service then
+			cmdl = cmds[service.to_sym] + " -p #{ssh_ports[service.to_sym]}:22"
+			Docker::launch("#{image_name}:#{service}.dev.latest", service, cmdl)
+		else
+			cmds.each do |k,v|
+				cmdl = cmds[k.to_sym] + " -p #{ssh_ports[k.to_sym]}:22"
+				Docker::launch("#{image_name}:#{k}.dev.latest", k, cmdl)
+			end
+		end
 	end
 	task :ssh, [:service] do |t, args|
 		service = (args[:service] or default_service)

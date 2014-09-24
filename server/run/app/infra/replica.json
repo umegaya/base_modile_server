@@ -1,0 +1,27 @@
+{
+  "id": "app.replica",
+  "apiVersion": "v1beta1",
+  "kind": "ReplicationController",
+  "desiredState": {
+    "replicas": 2,
+    "replicaSelector": {"name": "app"},
+    "podTemplate": {
+      "desiredState": {
+        "manifest": {
+          "version": "v1beta1",
+          "id": "app.pod",
+          "containers": [{
+            "name": "app",
+            "image": "dockerfile/nginx",
+            "ports": [{"containerPort": 80, "hostPort": 8090}],
+            "env":[
+              {"name":"DB_HOSTNAME","value":"%DB_HOSTNAME%"}
+            ]
+          }]
+        }
+      },
+      "labels": {"name": "app"}
+    }
+  },
+  "labels": {"name": "app.replica"}
+}

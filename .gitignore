@@ -1,3 +1,4 @@
-run/*/config/target
-setting.json
+server/run/*/infra/*_tmp.json
+server/run/*/config/target
+./data/*
 ./Dockerfile

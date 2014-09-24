@@ -1,0 +1,13 @@
+{
+  "kind": "Service",
+  "apiVersion": "v1beta1",
+  "id": "mgmtservice",
+  "port": 8091,
+  "labels": {
+     "name": "mgmtservice"
+  },
+  "selector": {
+     "name": "mgmt"
+  },
+  "createExternalLoadBalancer": true
+}
