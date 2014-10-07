@@ -1,0 +1,31 @@
+#!/bin/bash
+# runiter: daemon who has init.d script that supports start and status, 
+# status command should exit with error or returns output does not contain the word 'running'
+# to start service again.
+# to be runnable with runit
+
+if [ -z "$1" ]; then
+	echo "usage: runiter $servicename {$checkintv}"
+	exit -1
+fi
+SERVICE=$1
+INTV=$2
+if [ -z "$2" ]; then
+	INTV=60
+fi
+
+/etc/init.d/$SERVICE start
+while : ; do
+	OUT=`/etc/init.d/$SERVICE status`
+	STATUS=$?
+	if [ "$STATUS" != "0" ]; then
+		exit $STATUS
+	fi
+	if [[ $OUT =~ .*not\s+running.* ]]; then
+		exit 0
+	fi
+	if [[ ! $OUT =~ .*running.* ]]; then
+		exit 0
+	fi
+	sleep $INTV
+done

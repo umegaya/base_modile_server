@@ -1,34 +1,55 @@
+# if wi-fi network changed (eg. office <=> cafe), often boot2docker VM network is disabled.
+# so if some kind of network occurs any invokation of rake command, please enable following line.
+# sh "boot2docker stop && boot2docker start && sleep 10"
+
 cwd = File.dirname(__FILE__)
 
 require 'json'
 require "#{cwd}/util/docker"
 require "#{cwd}/util/gcloud"
+require "#{cwd}/util/k8s"
 
+verbose = false
 config = JSON.parse File.open("#{cwd}/setting.json").read
 default_service = config["default_service"]
 provider = config["provider"]
+project_name = config["project_name"]
 node_num = config["node_num"]
 default_target = config["target"]
+image_bucket = config["image_bucket"]
 image_name = config["image_name"]
+if image_name =~ /localhost:([0-9]+)/ then
+	ip = Docker::create_private_registry $1, image_bucket
+	#image_name = "#{ip}:#{$1}"
+end
+compute_zone = config["zone"]
+sql_instance_name = (config["sql_instance_name"] or "datastore")
+sql_instance_pass = config["sql_instance_pass"]
+
+kubeconf = "#{cwd}/infra/kubernetes/cluster/#{provider}/config.sh"
+kube_environment="KUBERNETES_PROVIDER=#{provider} KUBE_CONFIG_FILE=#{File.basename kubeconf}"
+puts "kubeenv:#{kube_environment}"
+K8S::rewrite_config_by_setting "#{cwd}/infra/kubernetes/cluster/#{provider}/config-default.sh", config, kubeconf, verbose
 
 namespace :infra do
 	task :init do
 		ip = nil
-		sh "ruby #{cwd}/infra/#{provider}/init.rb"
+		sh "bash #{cwd}/infra/#{provider}/init.sh"
 		Dir.chdir("#{cwd}/infra/kubernetes") do |path|
 			unless GCloud::Compute::Instance.has(/kubernetes.+/) then
 				# minions have not initialized yet
-				p "No cluster... create newone"
-				sh "KUBERNETES_PROVIDER=#{provider} hack/dev-build-and-up.sh"
+				p "No cluster... create new one"
+				sh "#{kube_environment} hack/dev-build-and-up.sh"
 			end
-			info = GCloud::SQL.get "db"
+			info = GCloud::SQL.get sql_instance_name
 			unless info then
-				p "No database... create newone"
-				info = GCloud::SQL.create "db"
+				p "No database... create new one"
+				info = GCloud::SQL.create sql_instance_name, sql_instance_pass
+				GCloud::SQL.update_grant_instances sql_instance_name
 			end
 			ip = info["ipAddresses"][0]["ipAddress"]
 		end
-		p "database ip address => #{ip}"
+		puts "database ip address => #{ip}"
 		dir = "#{cwd}/server/run"
 		Dir.open(dir).each do |path|
 			infra_dir = "#{dir}/#{path}/infra"
@@ -36,11 +57,15 @@ namespace :infra do
 			if File.exists?(rep) then
 				rep_tmp = "#{infra_dir}/replica_tmp.json"
 				# TODO : if more env value need to pass on creating cluster, better way to replace replica.json
-				sh "sed -e s/%DB_HOSTNAME%/#{ip}/g #{rep} > #{rep_tmp}"
+				sh "sed -e s/%DB_HOSTNAME%/#{ip}/g #{rep} > #{rep_tmp}", verbose: verbose
+				sh "sed -i.bk s/%GCS_BUCKET_NAME%/#{image_bucket}/g #{rep_tmp} && rm #{rep_tmp}.bk", verbose: verbose
 				Dir.chdir("infra/kubernetes") do |p|
-					# sh "KUBERNETES_PROVIDER=#{provider} cluster/kubecfg.sh delete replicationControllers/#{path}.replica"
-					if (`KUBERNETES_PROVIDER=#{provider} cluster/kubecfg.sh get replicationControllers/#{path}.replica 2>/dev/null`).empty? then
-						sh "KUBERNETES_PROVIDER=#{provider} cluster/kubecfg.sh -c #{rep_tmp} create replicationControllers"
+					puts  "replica check:#{path}"
+					# sh "#{kube_environment} cluster/kubecfg.sh delete replicationControllers/#{path}.replica" rescue nil
+					out = `#{kube_environment} cluster/kubecfg.sh get replicationControllers/#{path}.replica 2>/dev/null`
+					puts out if verbose
+					if out.empty? then
+						sh "#{kube_environment} cluster/kubecfg.sh -c #{rep_tmp} create replicationControllers"
 					end
 				end
 			end
@@ -48,58 +73,90 @@ namespace :infra do
 			if File.exists?(service) then
 				service_json = JSON.parse File.open(service).read
 				Dir.chdir("infra/kubernetes") do |p|
-					# sh "KUBERNETES_PROVIDER=#{provider} cluster/kubecfg.sh delete services/#{path}service"
-					if (`KUBERNETES_PROVIDER=#{provider} cluster/kubecfg.sh get services/#{path}service 2>/dev/null`).empty? then
-						sh "KUBERNETES_PROVIDER=#{provider} cluster/kubecfg.sh -c #{service} create services"
-						GCloud::Compute::Firewall.allow(service_json["port"])
+					puts "servie check:#{path}"
+					out = `#{kube_environment} cluster/kubecfg.sh get services/#{path}service 2>/dev/null`
+					puts out if verbose
+					# sh "#{kube_environment} cluster/kubecfg.sh delete services/#{path}service" rescue nil
+					if out.empty? then
+						sh "#{kube_environment} cluster/kubecfg.sh -c #{service} create services"
+						GCloud::Firewall.allow(service_json["port"])
 					end
 				end
 			end
 		end
 	end
+	task :update do
+		sh "#{kube_environment} cluster/kube-push.sh"
+	end
 	task :fin do
-		sh "ruby #{cwd}/infra/#{provider}/fin.rb"
-		Dir.chdir("#{cwd}/infra/kubernetes") do |path|
-			sh "KUBERNETES_PROVIDER=#{provider} cluster/kube-down.sh"
-		end
-		GCloud::SQL.delete "db" rescue nil
+		sh "bash #{cwd}/infra/#{provider}/fin.sh"
+		K8S.do "#{kube_environment} cluster/kube-down.sh"
+		# GCloud::SQL.delete sql_instance_name rescue nil
 		GCloud::Firewall.cleanup
 	end
 	task :auth, [:username] do |t, args|
-		unless File.exists?("~/.ssh/id_rsa.pub") then
+		sh "bash #{cwd}/infra/#{provider}/init.sh reset"
+		unless File.exists?("#{ENV['HOME']}/.ssh/id_rsa.pub") then
 			sh "ssh-keygen -t rsa"
 		end
-		username = args[:username] or ENV['USER']
-		if File.exists?("./server/cert/#{username}.pub")
-			raise "username duplicate. please specify unique user name as rake infra:auth[username]" 
+		username = ((not args[:username]) or args[:username].empty?) ? ENV['USER'] : args[:username]
+		certpath = "#{cwd}/server/cert/#{username}.pub"
+		if File.exists?(certpath) then
+			flag = true
+			while flag do
+				print "#{certpath}: exists. username duplicate. overwrite previous cert for this user? [y/n]: "
+				response = STDIN.gets.chomp
+				case response
+				when 'y', 'Y'
+					flag = false
+				when 'n', 'N'
+					raise "please specify unique user name as rake infra:auth[username]"
+				end
+			end			 
 		end
-		sh "cp ~/.ssh/id_rsa.pub server/cert/#{username}.pub"
-		sh "gcloud compute project-info add-metadata example-instance --metadata-from-file sshKeys=~/.ssh/id_rsa.pub"
-		p "please commit server/cert/$your_username.pub to repository to enable your login permission to container permanently"
+		sh "cp ~/.ssh/id_rsa.pub #{certpath}"
+		sh "for pub in server/cert/*.pub; do echo `basename $pub .pub`:`cat $pub`; done > #{cwd}/server/cert/tmp.certs"
+		sh "gcloud compute project-info add-metadata --metadata-from-file sshKeys=#{cwd}/server/cert/tmp.certs"
+		# deceive gcloud compute ssh into regarding public key file already added.
+		sh "cp ~/.ssh/id_rsa.pub ~/.ssh/google_compute_engine.pub && cp ~/.ssh/id_rsa ~/.ssh/google_compute_engine"
+		puts "please push server/cert/$your_username.pub to repository to enable your login permission to container permanently"
 	end
 	task :resize, [:service, :size] do |t, args|
 		service = (args[:service] or default_service)
-		p "scale " + service + " to " + (args[:size] or 1).to_s
-		# resize (kubecfg resizse #{service}, #{size})
+		size = args[:size] or "1"
+		puts "scale " + service + " to " + size
+		# resize (kubecfg resize #{service}, #{size})
+		K8S.do "#{kube_environment} cluster/kubecfg.sh resize #{service}.replica #{size}"
+		GCloud::SQL.update_grant_instances sql_instance_name
+	end
+	task :update_sql_grant do
+		GCloud::SQL.update_grant_instances sql_instance_name
 	end
 	task :deploy, [:service, :target, :version] => :init do |t, args|
 		service = (args[:service] or default_service)
-		p "deploy " + service
+		target = (args[:target] or default_target)
+		version = (args[:version] or "latest")
+		puts "deploy #{service}.#{target}.#{version}"
 		# migrate database corresponding to service
+		info = GCloud::SQL.get sql_instance_name
+		sh "bash #{cwd}/server/schema/migrate.sh #{service} root #{service} #{sql_instance_pass} #{info["ipAddresses"][0]["ipAddress"]}"
 		# deploy (kubecfg rollingUpdate #{service})
+		K8S.do "#{kube_environment} cluster/kubecfg.sh " +
+			"--image #{image_name}:#{service}.#{target}.#{version} rollingupdate #{service}.replica"
 	end
 end
 
 namespace :ci do
 	task :init do
-		sh "boot2docker stop && boot2docker start && sleep 10"
-		Dir.open("#{cwd}/server/run").each do |path|
+		rundir = "#{cwd}/server/run"
+		Dir.open(rundir).each do |path|
 			next if path =~ /\.+/
+			next unless File.exists? "#{rundir}/#{path}/deploy.sh"
 			Rake::Task["ci:build"].reenable
 			Rake::Task["ci:build"].invoke path.to_sym, "base"
 		end	
 	end
-	task :build, [:service, :target, :version] do |t, args|
+	task :build, [:service, :target, :version, :rebuild] do |t, args|
 		service = (args[:service] or default_service)
 		target = (args[:target] or default_target)
 		version = (args[:version] or "latest")
@@ -112,26 +169,30 @@ namespace :ci do
 		# because current ADD command does not support symlink (see https://github.com/docker/docker/issues/6094)
 		# we copy target Dockerfile to top of project and build.
 		sh "cp ci/#{service}/#{target == 'base' ? 'base' : 'update'}/Dockerfile ."
-		Docker::build("#{image_name}:#{service}.#{target}.#{version}", ".")
+		Docker::build("#{image_name}:#{service}.#{target}.#{version}", ".", args[:rebuild] == "true")
 		if target.to_sym != :dev then
-			Docker::push("#{image_name}:#{service}.#{target}.#{version}")
+			unless Docker::push("#{image_name}:#{service}.#{target}.#{version}") then
+				puts "push to private registry fails. re-initialize private repository accessor."
+				Docker::create_private_registry $1, image_bucket, true
+			end
 		end
 	end
-	task :rebuild, [:service, :target, :version] do |t, args|
+	task :rebuild, [:service, :target, :version, :rebuild] do |t, args|
 		service = (args[:service] or default_service)
 		target = (args[:target] or default_target)
 		version = (args[:version] or "latest")
 		Docker::kill(service)
 		Rake::Task["ci:build"].reenable
-		Rake::Task["ci:build"].invoke service, target, version
+		Rake::Task["ci:build"].invoke service, target, version, args[:rebuild]
 	end
-	task :test, [:service, :target, :version] => :build do |t, args|
+	task :test, [:service, :target, :version, :rebuild] => :rebuild do |t, args|
 		service = (args[:service] or default_service)
 		target = (args[:target] or default_target)
 		version = (args[:version] or "latest")
-		Docker::start("#{image_name}:#{service}.#{target}.#{version}", service, "/root/test.sh", "-v #{cwd}/server:/tmp/server")
+		raise "test fails" unless Docker::start("#{image_name}:#{service}.#{target}.#{version}", 
+			service, "/root/test.sh", "-v #{cwd}/server:/tmp/server")
 	end
-	task :deploy, [:service, :target, :version] => :test do |t, args|
+	task :deploy, [:service, :target, :version, :rebuild] => :test do |t, args|
 		service = (args[:service] or default_service)
 		target = (args[:target] or default_target)
 		version = (args[:version] or "latest")
@@ -150,33 +211,19 @@ ssh_ports = {
 
 namespace :dev do
 	task :init do
-		sh "boot2docker stop && boot2docker start && sleep 10"
-		Dir.open("#{cwd}/server/run").each do |path|
+		rundir = "#{cwd}/server/run"
+		Dir.open(rundir).each do |path|
 			next if path =~ /\.+/
+			next unless File.exists? "#{rundir}/#{path}/deploy.sh"
 			service = path.to_sym
 			Rake::Task["ci:rebuild"].reenable
 			Rake::Task["ci:rebuild"].invoke service, "dev"
-			Rake::Task["dev:run"].reenable
-			Rake::Task["dev:run"].invoke service
 		end	
+		Rake::Task["dev:run"].reenable
+		Rake::Task["dev:run"].invoke
 	end
 	task :run, [:service] => :stop do |t, args|
-		service = args[:service]
-		db_hostname_env="DB_HOSTNAME=`docker inspect -f {{.NetworkSettings.IPAddress}} db`"
-		cmds = {
-			:db => "-v #{cwd}/data:/var/lib/mysql -v #{cwd}/server:/tmp/server -p 3306:3306",
-			:app => "-v #{cwd}/server:/tmp/server -e #{db_hostname_env} -p 8080:80",
-			:mgmt => "-v #{cwd}/server:/tmp/server -e #{db_hostname_env} -p 8081:80",
-		}
-		if service then
-			cmdl = cmds[service.to_sym] + " -p #{ssh_ports[service.to_sym]}:22"
-			Docker::launch("#{image_name}:#{service}.dev.latest", service, cmdl)
-		else
-			cmds.each do |k,v|
-				cmdl = cmds[k.to_sym] + " -p #{ssh_ports[k.to_sym]}:22"
-				Docker::launch("#{image_name}:#{k}.dev.latest", k, cmdl)
-			end
-		end
+		Docker::Service.run_devsv image_name, cwd, ssh_ports, args[:service]
 	end
 	task :ssh, [:service] do |t, args|
 		service = (args[:service] or default_service)
@@ -190,13 +237,31 @@ namespace :dev do
 		service = (args[:service] or default_service)
 		Docker::run("db", "-p #{ssh_ports[:db]}", "bash /tmp/server/schema/migrate.sh #{service}")
 	end
+	task :test, [:service] do |t, args|
+		service = (args[:service] or default_service)
+		if service.to_sym != :db then
+			Rake::Task["dev:migrate"].invoke service
+		end
+		Docker::run(service, "-p #{ssh_ports[service.to_sym]}", "bash /tmp/server/run/#{service}/test.sh")
+		raise "test fails" unless $?.success?
+	end
 	task :deploy, [:service] do |t, args|
 		service = (args[:service] or default_service)
 		if service.to_sym != :db then
 			Rake::Task["dev:migrate"].invoke service
 		end
-		Docker::run(service, "-p #{ssh_ports[service.to_sym]}", "bash /tmp/server/run/#{service}/deploy.sh")
+		Docker::run(service, "-p #{ssh_ports[service.to_sym]}", 
+			"bash /tmp/server/run/#{service}/deploy.sh && sv #{service} up && sv #{service} down")
 	end
 end
 
+namespace :shipyard do
+	task :build do
+		sh "docker login"
+		sh "cp setup/Dockerfile ."
+		image = "umegaya/shipyard:#{(`git log -n 1 --format="%h"`).chop}"
+		Docker::build(image, ".")
+		Docker::push(image)
+	end
+end
 

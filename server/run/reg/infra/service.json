@@ -1,0 +1,12 @@
+{
+  "kind": "Service",
+  "apiVersion": "v1beta1",
+  "id": "regservice",
+  "port": 5000,
+  "labels": {
+     "name": "regservice"
+  },
+  "selector": {
+     "name": "reg"
+  }
+}

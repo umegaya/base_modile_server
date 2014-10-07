@@ -1,0 +1,27 @@
+{
+  "id": "reg.replica",
+  "apiVersion": "v1beta1",
+  "kind": "ReplicationController",
+  "desiredState": {
+    "replicas": 1,
+    "replicaSelector": {"name": "reg"},
+    "podTemplate": {
+      "desiredState": {
+        "manifest": {
+          "version": "v1beta1",
+          "id": "reg.pod",
+          "containers": [{
+            "name": "reg",
+            "image": "google/docker-registry",
+            "ports": [{"containerPort": 5000, "hostPort": 5001}],
+            "env":[
+              {"name":"GCS_BUCKET","value":"%GCS_BUCKET_NAME%"}
+            ]
+          }]
+        }
+      },
+      "labels": {"name": "reg"}
+    }
+  },
+  "labels": {"name": "reg.replica"}
+}

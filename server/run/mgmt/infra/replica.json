@@ -12,8 +12,8 @@
           "id": "mgmt.pod",
           "containers": [{
             "name": "mgmt",
-            "image": "dockerfile/nginx",
-            "ports": [{"containerPort": 80, "hostPort": 8091}],
+            "image": "localhost:5000/gwixoss:mgmt.base.latest",
+            "ports": [{"containerPort": 80, "hostPort": 8191}],
             "env": [
               {"name":"DB_HOSTNAME","value":"%DB_HOSTNAME%"}
             ]

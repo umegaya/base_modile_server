@@ -1,15 +1,16 @@
 
 class DBMigrater
-	def initialize(dbname, user, password, dir = ".")
+	def initialize(dbname, user, password, hostname, dir = ".")
 		@dbname = dbname
 		@user = user
 		@password = password
+		@hostname = hostname
 		@dir = dir
 	end
 
 	# mysqlに何かするときに使う汎用的なコマンド部分を返す
-	def mysql_base_command
-		"mysql -u #{@user} #{@password ? ("-p" + @password) : ""} #{@dbname}"
+	def mysql_base_command(add_dbname = true)
+		"mysql -u #{@user} #{@password ? ("-p" + @password) : ""} #{@hostname ? ("-h" + @hostname) : ""} #{add_dbname ? @dbname : ""}"
 	end
 
 	# すでにdb versionが存在するか調べ、なければ初期化する。現在のdbのバージョンを返す。
@@ -27,7 +28,7 @@ class DBMigrater
 		out = `#{mysql_base_command} -e "show tables"`
 		if out.empty? then
 			p "create database: #{@dbname}"
-			p `mysql -u #{@user} #{@password ? ("-p" + @password) : ""} -e "create database #{@dbname}"`
+			p `#{mysql_base_command false} -e "create database #{@dbname}"`
 			p `#{mysql_base_command} < #{@dir}/0_init.sql`
 		end
 	end		

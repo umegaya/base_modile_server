@@ -1,27 +1,27 @@
 {
-  "id": "app.replica",
+  "id": "batch.replica",
   "apiVersion": "v1beta1",
   "kind": "ReplicationController",
   "desiredState": {
-    "replicas": 2,
-    "replicaSelector": {"name": "app"},
+    "replicas": 1,
+    "replicaSelector": {"name": "batch"},
     "podTemplate": {
       "desiredState": {
         "manifest": {
           "version": "v1beta1",
-          "id": "app.pod",
+          "id": "batch.pod",
           "containers": [{
-            "name": "app",
+            "name": "batch",
             "image": "localhost:5000/gwixoss:app.base.latest",
-            "ports": [{"containerPort": 80, "hostPort": 8190}],
             "env":[
-              {"name":"DB_HOSTNAME","value":"%DB_HOSTNAME%"}
+              {"name":"DB_HOSTNAME","value":"%DB_HOSTNAME%"},
+              {"name":"BATCH_MODE","value":"1"}
             ]
           }]
         }
       },
-      "labels": {"name": "app"}
+      "labels": {"name": "batch"}
     }
   },
-  "labels": {"name": "app.replica"}
+  "labels": {"name": "batch.replica"}
 }

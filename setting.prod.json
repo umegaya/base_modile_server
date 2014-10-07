@@ -1,0 +1,14 @@
+{
+ "default_service": "app",
+ "provider": "gce",
+ "project": "gwixoss-dokyogames-01",
+ "project_name": "gwixoss",
+ "zone": "asia-east1-b",
+ "master_instance_type": "g1-small",
+ "minion_instance_type": "g1-small",
+ "target": "prod",
+ "image_name": "localhost:5000/gwixoss",
+ "image_bucket": "gwixoss-bucket",
+ "sql_instance_name": "storage",
+ "sql_instance_pass": "941mahaman"
+}

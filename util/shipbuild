@@ -1,0 +1,8 @@
+#!/bin/bash
+
+if [ ! -e /repo/.git ]; then
+	git clone --recursive git@github.com:$1 /repo
+fi
+pushd /repo > /dev/null
+	bash /repo/ci/run/init.sh $2
+popd > /dev/null

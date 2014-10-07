@@ -16,7 +16,7 @@ crontab $CWD/cron/tab
 mkdir -p /etc/service/app
 cp -f $CWD/main.sh /etc/service/app/run
 
-# build app (it should kill current app server process to restart)
+# build app
 $CWD/build.sh
 
 # copy entry point scripts

@@ -1,4 +1,4 @@
-FROM dokyogames/gwixoss:db.base.latest
+FROM localhost:5000/gwixoss:db.base.latest
 
 # running deploy script
 ADD ./server /tmp/server

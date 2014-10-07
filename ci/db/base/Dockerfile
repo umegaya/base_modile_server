@@ -15,10 +15,11 @@ CMD ["/sbin/my_init"]
 RUN apt-get update && \
 	apt-get install -y ruby2.0 && \
 	apt-get install -y mysql-server && \
-	chown mysql:mysql /var/lib/mysql && mysql_install_db
+	chown mysql:mysql /var/lib/mysql
+RUN sed -i -E "s/bind-address[[:space:]]*=[[:space:]]*127.0.0.1/bind-address = 0.0.0.0/g" /etc/mysql/my.cnf
+
 RUN mkdir -p /etc/service/mysql
 ADD ./server/run/db/main.sh /etc/service/mysql/run
 
 # Clean up APT when done.
 RUN apt-get clean && rm -rf /var/lib/apt/lists/* /tmp/* /var/tmp/*
-	

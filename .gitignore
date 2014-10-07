@@ -1,3 +1,5 @@
+server/src/*.class
+server/cert/tmp.certs
 server/run/*/infra/*_tmp.json
 server/run/*/config/target
 ./data/*

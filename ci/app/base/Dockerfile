@@ -33,9 +33,11 @@ RUN wget http://download.newrelic.com/newrelic/java-agent/newrelic-agent/3.10.0/
 RUN apt-get install -y --force-yes td-agent
 RUN cat /dev/null > /var/log/td-agent/td-agent.log && chown td-agent:td-agent /var/log/td-agent/td-agent.log && \
 	/etc/init.d/td-agent stop
+ADD ./util/runiter /usr/bin/runiter
+RUN chmod 755 /usr/bin/runiter
 RUN	mkdir -p /etc/service/td-agent/ && \
 	echo "#!/bin/bash" >> /etc/service/td-agent/run && \
-	echo "/etc/init.d/td-agent start while : do sleep 60 done" >> /etc/service/td-agent/run && \
+	echo "exec /sbin/setuser root runiter td-agent" >> /etc/service/td-agent/run && \ 
 	chmod 755 /etc/service/td-agent/run
 
 # Clean up APT when done.
